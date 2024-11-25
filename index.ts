@@ -1,160 +1,173 @@
-import { writeFileSync } from "fs";
-import { address, type Address, signature } from "@solana/web3.js";
-import { createSolanaRpc, mainnet } from "@solana/web3.js";
-import bs58 from "bs58";
+import {
+  Connection,
+  type BlockResponse,
+  type TransactionResponse,
+} from "@solana/web3.js";
+import { writeFile } from "fs/promises";
+import { TransactionInstruction } from "@solana/web3.js";
 
-const rpc = createSolanaRpc(mainnet("https://api.mainnet-beta.solana.com"));
-
-interface ParsedInstruction {
-  blockId: number;
-  txId: string;
-  signer: string[];
-  programId: string;
-  eventType: string;
-  decodedInstruction: string;
+interface TransactionData {
+  hash: string;
+  nonce: number | null;
+  transaction_index: number;
+  from_address: string;
+  to_address: string;
+  value: number;
+  gas: number;
+  gas_price: number;
+  input: string;
+  receipt_cumulative_gas_used: number;
+  receipt_gas_used: number;
+  receipt_contract_address: string | null;
+  receipt_root: string | null;
+  receipt_status: number;
+  block_timestamp: number;
+  block_number: number;
+  block_hash: string;
+  max_fee_per_gas: number;
+  max_priority_fee_per_gas: number;
+  transaction_type: number;
+  receipt_effective_gas_price: number;
+  source: string;
+  created_at: string;
 }
 
-export type BlockResponse = Awaited<
-  ReturnType<ReturnType<typeof rpc.getBlock>["send"]>
->;
+class SolanaBlockchainQuery {
+  private connection: Connection;
 
-async function fetchRecentBlocks(
-  blockCount: number
-): Promise<ParsedInstruction[]> {
-  const rpc = createSolanaRpc("https://api.testnet.sonic.game");
-  const currentSlot = Number(await rpc.getSlot().send());
+  constructor(rpcUrl: string) {
+    this.connection = new Connection(rpcUrl, "confirmed");
+  }
 
-  const instructions: ParsedInstruction[] = [];
-
-  for (let i = 0; i < blockCount; i++) {
-    const blockSlot = currentSlot - i;
-    const block = await rpc
-      .getBlock(BigInt(blockSlot), {
+  private async getBlockData(slot: number): Promise<BlockResponse | null> {
+    try {
+      return await this.connection.getBlock(slot, {
         maxSupportedTransactionVersion: 0,
         rewards: false,
-        encoding: "jsonParsed",
-      })
-      .send();
-
-    if (!block) {
-      console.warn(`Block ${blockSlot} not found.`);
-      continue;
-    }
-
-    if (block) {
-      // =====
-      // const transactionsPromises = await Promise.all(
-      //   block.transactions.map((tx) =>
-      //     rpc
-      //       .getTransaction(signature(tx.transaction.signatures[0]), {
-      //         maxSupportedTransactionVersion: 0,
-      //         encoding: "json",
-      //       })
-      //       .send()
-      //   )
-      // );
-
-      block.transactions.forEach((tx, txIdx) => {
-        const txId = tx.transaction.signatures[0];
-        const message = tx.transaction.message;
-        const programInstructions = tx.transaction.message.instructions;
-
-        programInstructions.forEach((instruction, idx) => {
-          const { name: instructionName, details: decodedInstruction } =
-            getInstructionDetails(instruction.programId, instruction);
-
-          const parsed: ParsedInstruction = {
-            blockId: blockSlot,
-            txId,
-            signer: message.accountKeys
-              .filter((key) => key.signer)
-              .map((key) => address(key.pubkey)),
-            programId: instruction.programId,
-            eventType: instructionName,
-            decodedInstruction,
-          };
-          instructions.push(parsed);
-        });
       });
+    } catch (error) {
+      console.error(`Error fetching block at slot ${slot}:`, error);
+      return null;
     }
   }
 
-  return instructions;
+  private transformTransaction(
+    tx: TransactionResponse,
+    blockTimestamp: number,
+    blockNumber: number,
+    blockHash: string,
+    index: number
+  ): TransactionData | null {
+    try {
+      const accountKeys = tx.transaction.message.accountKeys;
+      if (!accountKeys?.length) return null;
+
+      const fromAddress = accountKeys[0].toBase58();
+      const toAddress = accountKeys[1]?.toBase58() || "";
+
+      // Calculate value transfer (if any)
+      const preBalance = tx.meta?.preBalances[1] || 0;
+      const postBalance = tx.meta?.postBalances[1] || 0;
+      const value = Math.max(0, postBalance - preBalance);
+
+      return {
+        hash: tx.transaction.signatures[0],
+        nonce: null, // Solana doesn't use nonces in the same way
+        transaction_index: index,
+        from_address: fromAddress,
+        to_address: toAddress,
+        value: value,
+        gas: tx.meta?.fee || 0,
+        gas_price: 1, // Solana uses different fee model
+        input: JSON.stringify(tx.transaction.message.instructions),
+        receipt_cumulative_gas_used: tx.meta?.fee || 0,
+        receipt_gas_used: tx.meta?.fee || 0,
+        receipt_contract_address: null,
+        receipt_root: null,
+        receipt_status: tx.meta?.err ? 0 : 1,
+        block_timestamp: blockTimestamp,
+        block_number: blockNumber,
+        block_hash: blockHash,
+        max_fee_per_gas: 0,
+        max_priority_fee_per_gas: 0,
+        transaction_type: 0,
+        receipt_effective_gas_price: 0,
+        source: "solana_testnet",
+        created_at: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.error("Error transforming transaction:", error);
+      return null;
+    }
+  }
+
+  async queryRecentBlocks(numBlocks: number = 2): Promise<TransactionData[]> {
+    try {
+      // Get current slot
+      const currentSlot = await this.connection.getSlot();
+      const transactions: TransactionData[] = [];
+
+      // Query the specified number of recent blocks
+      for (let i = 0; i < numBlocks; i++) {
+        const slot = currentSlot - i;
+        console.log(`Querying block at slot: ${slot}`);
+
+        const block = await this.getBlockData(slot);
+        if (!block) continue;
+
+        // Process all transactions in the block
+        block.transactions.forEach((tx, index) => {
+          const transformedTx = this.transformTransaction(
+            tx,
+            block.blockTime || 0,
+            slot,
+            block.blockhash,
+            index
+          );
+          if (transformedTx) {
+            transactions.push(transformedTx);
+          }
+        });
+      }
+
+      return transactions;
+    } catch (error) {
+      console.error("Error querying recent blocks:", error);
+      throw error;
+    }
+  }
+
+  async saveToFile(transactions: TransactionData[]): Promise<void> {
+    const timestamp = Date.now();
+    const filename = `solana_transactions_${timestamp}.json`;
+
+    try {
+      await writeFile(filename, JSON.stringify(transactions, null, 2));
+      console.log(
+        `Successfully wrote ${transactions.length} transactions to ${filename}`
+      );
+    } catch (error) {
+      console.error("Error saving to file:", error);
+      throw error;
+    }
+  }
 }
 
-async function generateJsonOutput(
-  blockCount: number,
-  outputFile: string
-): Promise<void> {
-  const instructions = await fetchRecentBlocks(blockCount);
-  const filteredInstructions = instructions.filter(
-    (instruction) =>
-      instruction.eventType === "NativeSOLTransfer" ||
-      instruction.eventType === "SPLTokenTransfer"
-  );
-
-  const jsonData = JSON.stringify(
-    filteredInstructions,
-    (key, value) => (typeof value === "bigint" ? value.toString() : value), // Convert BigInt to string
-    2
-  );
-  writeFileSync(outputFile, jsonData);
-  console.log(`Output written to ${outputFile}`);
-}
-
-// Main execution
-const BLOCK_COUNT = 1; // Number of recent blocks to query
-const OUTPUT_FILE = `parsed_instructions_sonic_testnet_v1_${BLOCK_COUNT}_blocks_${Date.now()}.json`;
-
-function getInstructionDetails(
-  programId: string,
-  instruction: any
-): { name: string; details: any } {
-  let decodedData: Uint8Array;
-
+// Usage example
+async function main() {
   try {
-    decodedData = bs58.decode(instruction.data || ""); // Decode Base58 data if present
+    const rpcUrl = "https://api.testnet.sonic.game";
+    const query = new SolanaBlockchainQuery(rpcUrl);
+
+    // Query recent blocks
+    const transactions = await query.queryRecentBlocks(1);
+
+    // Save results to file
+    await query.saveToFile(transactions);
   } catch (error) {
-    console.warn(`Failed to decode instruction data:`, error);
-    return { name: "InvalidData", details: null };
+    console.error("Main execution error:", error);
+    process.exit(1);
   }
-
-  if (programId === "11111111111111111111111111111111") {
-    // System Program (Native SOL Transfer)
-    const { parsed } = instruction;
-    console.info("parsed", parsed);
-    if (parsed?.info?.lamports) {
-      return {
-        name: "NativeSOLTransfer",
-        details: {
-          source: parsed.info.source,
-          destination: parsed.info.destination,
-          lamports: parsed.info.lamports,
-        },
-      };
-    }
-  } else if (programId === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") {
-    // SPL Token Program (Token Transfers)
-    const { parsed } = instruction;
-    if (parsed?.type === "transfer") {
-      return {
-        name: "SPLTokenTransfer",
-        details: {
-          source: parsed.info.source,
-          destination: parsed.info.destination,
-          amount: parsed.info.amount,
-        },
-      };
-    }
-  }
-
-  // Unknown instruction
-  return {
-    name: "UnknownInstruction",
-    details: decodedData,
-  };
 }
 
-generateJsonOutput(BLOCK_COUNT, OUTPUT_FILE).catch((error) => {
-  console.error("Error generating JSON output:", error);
-});
+main();
