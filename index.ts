@@ -103,7 +103,7 @@ async function generateJsonOutput(
 }
 
 // Main execution
-const BLOCK_COUNT = 100; // Number of recent blocks to query
+const BLOCK_COUNT = 1; // Number of recent blocks to query
 const OUTPUT_FILE = `parsed_instructions_sonic_testnet_v1_${BLOCK_COUNT}_blocks_${Date.now()}.json`;
 
 function getInstructionDetails(
@@ -122,6 +122,7 @@ function getInstructionDetails(
   if (programId === "11111111111111111111111111111111") {
     // System Program (Native SOL Transfer)
     const { parsed } = instruction;
+    console.info("parsed", parsed);
     if (parsed?.info?.lamports) {
       return {
         name: "NativeSOLTransfer",
