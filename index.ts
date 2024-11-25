@@ -4,7 +4,6 @@ import {
   type TransactionResponse,
 } from "@solana/web3.js";
 import { writeFile } from "fs/promises";
-import { TransactionInstruction } from "@solana/web3.js";
 
 interface TransactionData {
   hash: string;

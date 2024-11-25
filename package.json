@@ -9,7 +9,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@solana/web3.js": "^2.0.0-preview.4",
+    "@solana/web3.js": "^1.95.4",
     "bs58": "^6.0.0"
   }
 }
