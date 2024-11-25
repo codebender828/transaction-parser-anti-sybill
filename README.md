@@ -1,4 +1,6 @@
-# transaction-parser-v2
+# transaction-parser
+
+Query and parse transactions for Anti-Sybill purposes.
 
 To install dependencies:
 
